@@ -24,10 +24,12 @@ import (
 )
 
 type Opts struct {
-	CACertPaths []string
-	VerifyCerts bool
-	Insecure    bool
-
+	CACertPaths                   []string
+	VerifyCerts                   bool
+	Insecure                      bool
+	MutualTls                     bool
+	ClientCertificate             string
+	ClientKey                     string
 	IncludeNonDistributableLayers bool
 
 	Username string
@@ -453,9 +455,23 @@ func newHTTPTransport(opts Opts) (*http.Transport, error) {
 	clonedDefaultTransport := http.DefaultTransport.(*http.Transport).Clone()
 	clonedDefaultTransport.ForceAttemptHTTP2 = false
 	clonedDefaultTransport.ResponseHeaderTimeout = opts.ResponseHeaderTimeout
-	clonedDefaultTransport.TLSClientConfig = &tls.Config{
-		RootCAs:            pool,
-		InsecureSkipVerify: opts.VerifyCerts == false,
+	if opts.MutualTls {
+		cert, err := tls.LoadX509KeyPair(opts.ClientCertificate, opts.ClientKey)
+		if err != nil {
+			return nil, fmt.Errorf("Failed to read client certificate or key from '%s' and '%s': %s", opts.ClientCertificate, opts.ClientKey, err)
+		}
+		certs := make([]tls.Certificate, 0)
+		certs = append(certs, cert)
+		clonedDefaultTransport.TLSClientConfig = &tls.Config{
+			RootCAs:            pool,
+			Certificates:       certs,
+			InsecureSkipVerify: opts.VerifyCerts == false,
+		}
+	} else {
+		clonedDefaultTransport.TLSClientConfig = &tls.Config{
+			RootCAs:            pool,
+			InsecureSkipVerify: opts.VerifyCerts == false,
+		}
 	}
 
 	return clonedDefaultTransport, nil
