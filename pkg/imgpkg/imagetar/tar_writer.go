@@ -12,14 +12,13 @@ import (
 	"sort"
 	"time"
 
-	goui "github.com/cppforlife/go-cli-ui/ui"
 	regv1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/imagedesc"
 	"github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/internal/util"
 )
 
 type Logger interface {
-	WriteStr(str string, args ...interface{}) error
+	Logf(str string, args ...interface{})
 }
 
 type TarWriterOpts struct {
@@ -35,13 +34,23 @@ type TarWriter struct {
 	layersToWrite []imagedesc.ImageLayerDescriptor
 
 	opts                  TarWriterOpts
-	ui                    goui.UI
+	logger                Logger
 	imageLayerWriterCheck ImageLayerWriterFilter
+	layersFromOtherSource []regv1.Layer
 }
 
 // NewTarWriter constructor returning a mechanism to write image refs / layers to a tarball on disk.
-func NewTarWriter(ids *imagedesc.ImageRefDescriptors, dstOpener func() (io.WriteCloser, error), opts TarWriterOpts, ui goui.UI, imageLayerWriterCheck ImageLayerWriterFilter) *TarWriter {
-	return &TarWriter{ids: ids, dstOpener: dstOpener, opts: opts, ui: ui, imageLayerWriterCheck: imageLayerWriterCheck}
+func NewTarWriter(ids *imagedesc.ImageRefDescriptors, dstOpener func() (io.WriteCloser, error),
+	opts TarWriterOpts, logger Logger, imageLayerWriterCheck ImageLayerWriterFilter,
+	layersFromOtherSource []regv1.Layer) *TarWriter {
+	return &TarWriter{
+		ids:                   ids,
+		dstOpener:             dstOpener,
+		opts:                  opts,
+		logger:                logger,
+		imageLayerWriterCheck: imageLayerWriterCheck,
+		layersFromOtherSource: layersFromOtherSource,
+	}
 }
 
 func (w *TarWriter) Write() error {
@@ -167,14 +176,30 @@ func (w *TarWriter) writeLayers() error {
 		if isInflatable {
 			stream = nil
 		} else {
-			foundLayer, err := w.ids.FindLayer(imgLayer)
-			if err != nil {
-				return err
+			for _, layer := range w.layersFromOtherSource {
+				d, err := layer.Digest()
+				if err != nil {
+					return fmt.Errorf("Retrieving digest: %s", err)
+				}
+				if d.String() == imgLayer.Digest {
+					stream, err = layer.Compressed()
+					if err != nil {
+						return fmt.Errorf("Retrieve layer from file: %s", err)
+					}
+					break
+				}
 			}
 
-			stream, err = foundLayer.Open()
-			if err != nil {
-				return err
+			if stream == nil {
+				foundLayer, err := w.ids.FindLayer(imgLayer)
+				if err != nil {
+					return err
+				}
+
+				stream, err = foundLayer.Open()
+				if err != nil {
+					return err
+				}
 			}
 		}
 
@@ -303,7 +328,7 @@ func (w *TarWriter) writeTarEntry(tw *tar.Writer, path string, r io.Reader, size
 	}
 
 	if !zerosFill {
-		w.ui.BeginLinef("done: file '%s' (%s)\n", path, time.Now().Sub(t1))
+		w.logger.Logf("done: file '%s' (%s)\n", path, time.Now().Sub(t1))
 	}
 
 	return nil

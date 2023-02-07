@@ -4,7 +4,6 @@
 package helpers
 
 import (
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,9 +44,9 @@ func (a *Assets) copySimpleApp(dst string) error {
 			return os.Mkdir(filepath.Join(dst, relPath), 0755)
 		}
 
-		var data, err1 = ioutil.ReadFile(filepath.Join(source, relPath))
+		var data, err1 = os.ReadFile(filepath.Join(source, relPath))
 		require.NoError(a.T, err1)
-		return ioutil.WriteFile(filepath.Join(dst, relPath), data, 0777)
+		return os.WriteFile(filepath.Join(dst, relPath), data, 0777)
 	})
 	return err
 }
@@ -84,7 +83,7 @@ func (a *Assets) CreateTempFolder(prefix string) string {
 		prefix = "bundle"
 	}
 
-	rDir, err := ioutil.TempDir("", prefix)
+	rDir, err := os.MkdirTemp("", prefix)
 	require.NoError(a.T, err, "creating bundle folder")
 	a.CreatedFolders = append(a.CreatedFolders, rDir)
 	return rDir
@@ -106,7 +105,20 @@ func (a *Assets) CreateAndCopySimpleApp(prefix string) string {
 	return outDir
 }
 
+// AddFolder Adds a file to a folder with 0600 permission
+func (a *Assets) AddFolder(path string, perm os.FileMode) {
+	a.T.Helper()
+	require.NoError(a.T, os.MkdirAll(path, perm))
+}
+
+// AddFileToFolder Adds a file to a folder with 0600 permission
 func (a *Assets) AddFileToFolder(path, content string) {
+	a.T.Helper()
+	a.AddFileToFolderWithPermissions(path, content, 0600)
+}
+
+// AddFileToFolderWithPermissions Adds a file to a folder and sets permissions
+func (a *Assets) AddFileToFolderWithPermissions(path, content string, perm os.FileMode) {
 	a.T.Helper()
 	subfolders, _ := filepath.Split(path)
 	if subfolders != "" {
@@ -114,6 +126,6 @@ func (a *Assets) AddFileToFolder(path, content string) {
 		require.NoError(a.T, err)
 	}
 
-	err := ioutil.WriteFile(path, []byte(content), 0600)
+	err := os.WriteFile(path, []byte(content), perm)
 	require.NoError(a.T, err)
 }

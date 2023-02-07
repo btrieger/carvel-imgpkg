@@ -7,8 +7,6 @@ import (
 	"fmt"
 
 	"github.com/cppforlife/go-cli-ui/ui"
-	regv1 "github.com/google/go-containerregistry/pkg/v1"
-	"github.com/google/go-containerregistry/pkg/v1/types"
 	"github.com/spf13/cobra"
 	"github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/bundle"
 	ctlimgset "github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/imageset"
@@ -36,6 +34,7 @@ type CopyOptions struct {
 
 	Concurrency             int
 	IncludeNonDistributable bool
+	UseRepoBasedTags        bool
 }
 
 // NewCopyOptions constructor for building a CopyOptions, holding values derived via flags
@@ -60,13 +59,22 @@ func NewCopyCmd(o *CopyOptions) *cobra.Command {
     # NOTE: if not using ~/.docker.config for authn, use env vars as described  #
     # in https://carvel.dev/imgpkg/docs/v0.24.0/auth/#via-environment-variables #
     # ##########################################################################
-    imgpkg copy -i dkalinin/app1-image --to-repo internal-registry/app1-image`,
+    imgpkg copy -i dkalinin/app1-image --to-repo internal-registry/app1-image
+
+    # Copy using image --repo-based-tags flag
+    imgpkg copy -i registry.foo.bar/some/application/app \
+                --to-repo other-reg.faz.baz/my-app --repo-based-tags
+
+    # If the above source repo has a tag sha256:669e010b58baf5beb2836b253c1fd5768333f0d1dbcb834f7c07a4dc93f474be,
+    # a new tag some-application-app-sha256-669e010b58baf5beb2836b253c1fd5768333f0d1dbcb834f7c07a4dc93f474be.imgpkg
+    # will be created in the destination repo. Note that the part of the new tag preceeding '-sha256' will be truncated to
+    # the last 49 charachters`,
 	}
 
 	o.ImageFlags.SetCopy(cmd)
 	o.BundleFlags.SetCopy(cmd)
 	o.LockInputFlags.Set(cmd)
-	o.LockOutputFlags.Set(cmd)
+	o.LockOutputFlags.SetOnCopy(cmd)
 	o.TarFlags.Set(cmd)
 	o.RegistryFlags.Set(cmd)
 	o.SignatureFlags.Set(cmd)
@@ -74,6 +82,8 @@ func NewCopyCmd(o *CopyOptions) *cobra.Command {
 	cmd.Flags().IntVar(&o.Concurrency, "concurrency", 5, "Concurrency")
 	cmd.Flags().BoolVar(&o.IncludeNonDistributable, "include-non-distributable-layers", false,
 		"Include non-distributable layers when copying an image/bundle")
+	cmd.Flags().BoolVar(&o.UseRepoBasedTags, "repo-based-tags", false,
+		"Allow imgpkg to use repository-based tags for convenience")
 	return cmd
 }
 
@@ -93,11 +103,17 @@ func (c *CopyOptions) Run() error {
 		return err
 	}
 
-	prefixedLogger := util.NewUIPrefixedWriter("copy | ", c.ui)
+	prefixedLogger := util.NewPrefixedLogger("copy | ", util.NewLogger(c.ui))
 	levelLogger := util.NewUILevelLogger(util.LogWarn, prefixedLogger)
 	imagesUploaderLogger := util.NewProgressBar(levelLogger, "done uploading images", "Error uploading images")
 
-	imageSet := ctlimgset.NewImageSet(c.Concurrency, prefixedLogger)
+	var tagGen util.TagGenerator
+	tagGen = util.DefaultTagGenerator{}
+	if c.UseRepoBasedTags {
+		tagGen = util.RepoBasedTagGenerator{}
+	}
+
+	imageSet := ctlimgset.NewImageSet(c.Concurrency, prefixedLogger, tagGen)
 	tarImageSet := ctlimgset.NewTarImageSet(imageSet, c.Concurrency, prefixedLogger)
 
 	var signatureRetriever SignatureRetriever
@@ -115,7 +131,7 @@ func (c *CopyOptions) Run() error {
 		IncludeNonDistributable: c.IncludeNonDistributable,
 		Concurrency:             c.Concurrency,
 
-		ui:                 levelLogger,
+		logger:             levelLogger,
 		registry:           registry.NewRegistryWithProgress(reg, imagesUploaderLogger),
 		imageSet:           imageSet,
 		tarImageSet:        tarImageSet,
@@ -130,9 +146,13 @@ func (c *CopyOptions) Run() error {
 		if c.LockOutputFlags.LockFilePath != "" {
 			return fmt.Errorf("Cannot output lock file with tar destination")
 		}
-		return repoSrc.CopyToTar(c.TarFlags.TarDst)
+		return repoSrc.CopyToTar(c.TarFlags.TarDst, c.TarFlags.Resume)
 
 	case c.isRepoDst():
+		if c.TarFlags.Resume {
+			return fmt.Errorf("Flag --resume can only be used when copying to tar")
+		}
+
 		processedImages, err := repoSrc.CopyToRepo(c.RepoDst)
 		if err != nil {
 			return err
@@ -289,78 +309,4 @@ func (c *CopyOptions) writeBundleLockOutput(bundle *bundle.Bundle) error {
 	}
 
 	return bundleLock.WriteToPath(c.LockOutputFlags.LockFilePath)
-}
-
-func processedImagesMediaType(processedImages *ctlimgset.ProcessedImages) []string {
-	everyMediaType := []string{}
-	for _, image := range processedImages.All() {
-		if image.ImageIndex != nil {
-			mediaTypes := everyMediaTypeForAnImageIndex(image.ImageIndex)
-			everyMediaType = append(everyMediaType, mediaTypes...)
-		} else if image.Image != nil {
-			mediaTypes := everyMediaTypeForAnImage(image.Image)
-			everyMediaType = append(everyMediaType, mediaTypes...)
-		}
-	}
-	return everyMediaType
-}
-
-func everyMediaTypeForAnImageIndex(imageIndex regv1.ImageIndex) []string {
-	everyMediaType := []string{}
-	indexManifest, err := imageIndex.IndexManifest()
-	if err != nil {
-		return []string{}
-	}
-	for _, descriptor := range indexManifest.Manifests {
-		if descriptor.MediaType.IsIndex() {
-			imageIndex, err := imageIndex.ImageIndex(descriptor.Digest)
-			if err != nil {
-				continue
-			}
-			mediaTypesForImageIndex := everyMediaTypeForAnImageIndex(imageIndex)
-			everyMediaType = append(everyMediaType, mediaTypesForImageIndex...)
-		} else {
-			image, err := imageIndex.Image(descriptor.Digest)
-			if err != nil {
-				continue
-			}
-			mediaTypeForImage := everyMediaTypeForAnImage(image)
-			everyMediaType = append(everyMediaType, mediaTypeForImage...)
-		}
-	}
-	return everyMediaType
-}
-
-func everyMediaTypeForAnImage(image regv1.Image) []string {
-	var everyMediaType []string
-
-	layers, err := image.Layers()
-	if err != nil {
-		return everyMediaType
-	}
-
-	for _, layer := range layers {
-		mediaType, err := layer.MediaType()
-		if err != nil {
-			continue
-		}
-		everyMediaType = append(everyMediaType, string(mediaType))
-	}
-	return everyMediaType
-}
-
-func informUserToUseTheNonDistributableFlagWithDescriptors(ui util.UIWithLevels, includeNonDistributableFlag bool, everyMediaType []string) {
-	noNonDistributableLayers := true
-
-	for _, mediaType := range everyMediaType {
-		if !types.MediaType(mediaType).IsDistributable() {
-			noNonDistributableLayers = false
-		}
-	}
-
-	if includeNonDistributableFlag && noNonDistributableLayers {
-		ui.Warnf("'--include-non-distributable-layers' flag provided, but no images contained a non-distributable layer.")
-	} else if !includeNonDistributableFlag && !noNonDistributableLayers {
-		ui.Warnf("Skipped layer due to it being non-distributable. If you would like to include non-distributable layers, use the --include-non-distributable-layers flag")
-	}
 }

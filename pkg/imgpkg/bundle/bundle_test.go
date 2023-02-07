@@ -11,12 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cppforlife/go-cli-ui/ui"
-	goui "github.com/cppforlife/go-cli-ui/ui"
 	regv1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/bundle"
-	"github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/bundle/bundlefakes"
 	"github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/imageset"
 	"github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/internal/util"
 	"github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/lockconfig"
@@ -25,7 +23,7 @@ import (
 )
 
 func TestPullBundleWritingContentsToDisk(t *testing.T) {
-	fakeUI := &bundlefakes.FakeUI{}
+	logger := util.NewNoopLevelLogger()
 	pullNestedBundles := false
 
 	t.Run("bundle referencing an image", func(t *testing.T) {
@@ -35,19 +33,19 @@ func TestPullBundleWritingContentsToDisk(t *testing.T) {
 		fakeRegistry.WithBundleFromPath("repo/some-bundle-name", "test_assets/bundle").WithEveryImageFromPath("test_assets/image_with_config", map[string]string{})
 		subject := bundle.NewBundle(fakeRegistry.ReferenceOnTestServer("repo/some-bundle-name"), fakeRegistry.Build())
 		outputPath, err := os.MkdirTemp(os.TempDir(), "test-output-bundle-path")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer os.Remove(outputPath)
 
-		err = subject.Pull(outputPath, fakeUI, pullNestedBundles)
-		assert.NoError(t, err)
+		_, err = subject.Pull(outputPath, logger, pullNestedBundles)
+		require.NoError(t, err)
 
-		assert.DirExists(t, outputPath)
+		require.DirExists(t, outputPath)
 		outputDirConfigFile := filepath.Join(outputPath, "config.yml")
-		assert.FileExists(t, outputDirConfigFile)
+		require.FileExists(t, outputDirConfigFile)
 		actualConfigFile, err := os.ReadFile(outputDirConfigFile)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		expectedConfigFile, err := os.ReadFile("test_assets/bundle/config.yml")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, string(expectedConfigFile), string(actualConfigFile))
 	})
 
@@ -63,26 +61,26 @@ func TestPullBundleWritingContentsToDisk(t *testing.T) {
 
 		subject := bundle.NewBundle(fakeRegistry.ReferenceOnTestServer("repo/bundle_icecream_with_single_bundle"), fakeRegistry.Build())
 		outputPath, err := os.MkdirTemp(os.TempDir(), "test-output-bundle-path")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer os.Remove(outputPath)
 
 		// test subject
-		err = subject.Pull(outputPath, fakeUI, pullNestedBundles)
-		assert.NoError(t, err)
-		assert.DirExists(t, outputPath)
+		_, err = subject.Pull(outputPath, logger, pullNestedBundles)
+		require.NoError(t, err)
+		require.DirExists(t, outputPath)
 
 		// assert icecream bundle was recursively pulled onto disk
 		outputDirConfigFile := filepath.Join(outputPath, ".imgpkg", "bundles", strings.ReplaceAll(icecreamBundle.Digest, "sha256:", "sha256-"))
-		assert.NoDirExists(t, outputDirConfigFile)
+		require.NoDirExists(t, outputDirConfigFile)
 
 		// assert apples bundle was recursively pulled onto disk
 		outputDirConfigFile = filepath.Join(outputPath, ".imgpkg", "bundles", strings.ReplaceAll(applesBundle.Digest, "sha256:", "sha256-"))
-		assert.NoDirExists(t, outputDirConfigFile)
+		require.NoDirExists(t, outputDirConfigFile)
 	})
 }
 
 func TestPullNestedBundlesWritingContentsToDisk(t *testing.T) {
-	fakeUI := &bundlefakes.FakeUI{}
+	logger := util.NewNoopLevelLogger()
 	pullNestedBundles := true
 
 	t.Run("bundle referencing an image", func(t *testing.T) {
@@ -92,19 +90,19 @@ func TestPullNestedBundlesWritingContentsToDisk(t *testing.T) {
 
 		subject := bundle.NewBundle(fakeRegistry.ReferenceOnTestServer("repo/some-bundle-name"), fakeRegistry.Build())
 		outputPath, err := os.MkdirTemp(os.TempDir(), "test-output-bundle-path")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer os.Remove(outputPath)
 
-		err = subject.Pull(outputPath, fakeUI, pullNestedBundles)
-		assert.NoError(t, err)
+		_, err = subject.Pull(outputPath, logger, pullNestedBundles)
+		require.NoError(t, err)
 
-		assert.DirExists(t, outputPath)
+		require.DirExists(t, outputPath)
 		outputDirConfigFile := filepath.Join(outputPath, "config.yml")
-		assert.FileExists(t, outputDirConfigFile)
+		require.FileExists(t, outputDirConfigFile)
 		actualConfigFile, err := os.ReadFile(outputDirConfigFile)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		expectedConfigFile, err := os.ReadFile("test_assets/bundle/config.yml")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, string(expectedConfigFile), string(actualConfigFile))
 	})
 
@@ -118,19 +116,19 @@ func TestPullNestedBundlesWritingContentsToDisk(t *testing.T) {
 
 		subject := bundle.NewBundle(fakeRegistry.ReferenceOnTestServer("repo/bundle_icecream_with_single_bundle"), fakeRegistry.Build())
 		outputPath, err := os.MkdirTemp(os.TempDir(), "test-output-bundle-path")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer os.Remove(outputPath)
 
-		err = subject.Pull(outputPath, fakeUI, pullNestedBundles)
-		assert.NoError(t, err)
+		_, err = subject.Pull(outputPath, logger, pullNestedBundles)
+		require.NoError(t, err)
 
-		assert.DirExists(t, outputPath)
+		require.DirExists(t, outputPath)
 		outputDirConfigFile := filepath.Join(outputPath, ".imgpkg", "bundles", strings.ReplaceAll(icecreamBundle.Digest, "sha256:", "sha256-"), "config.yml")
-		assert.FileExists(t, outputDirConfigFile)
+		require.FileExists(t, outputDirConfigFile)
 		actualConfigFile, err := os.ReadFile(outputDirConfigFile)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		expectedConfigFile, err := os.ReadFile("test_assets/bundle_with_mult_images/config.yml")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, string(expectedConfigFile), string(actualConfigFile))
 	})
 
@@ -146,36 +144,36 @@ func TestPullNestedBundlesWritingContentsToDisk(t *testing.T) {
 
 		subject := bundle.NewBundle(fakeRegistry.ReferenceOnTestServer("repo/bundle_icecream_with_single_bundle"), fakeRegistry.Build())
 		outputPath, err := os.MkdirTemp(os.TempDir(), "test-output-bundle-path")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer os.Remove(outputPath)
 
 		// test subject
-		err = subject.Pull(outputPath, fakeUI, pullNestedBundles)
-		assert.NoError(t, err)
+		_, err = subject.Pull(outputPath, logger, pullNestedBundles)
+		require.NoError(t, err)
 
 		// assert icecream bundle was recursively pulled onto disk
-		assert.DirExists(t, outputPath)
+		require.DirExists(t, outputPath)
 		outputDirConfigFile := filepath.Join(outputPath, ".imgpkg", "bundles", strings.ReplaceAll(iceCreamBundle.Digest, "sha256:", "sha256-"), "config.yml")
-		assert.FileExists(t, outputDirConfigFile)
+		require.FileExists(t, outputDirConfigFile)
 		actualConfigFile, err := os.ReadFile(outputDirConfigFile)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		expectedConfigFile, err := os.ReadFile("test_assets/bundle_apples_with_single_bundle/config.yml")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, string(expectedConfigFile), string(actualConfigFile))
 
 		// assert apples bundle was recursively pulled onto disk
 		outputDirConfigFile = filepath.Join(outputPath, ".imgpkg", "bundles", strings.ReplaceAll(applesBundle.Digest, "sha256:", "sha256-"), "config.yml")
-		assert.FileExists(t, outputDirConfigFile)
+		require.FileExists(t, outputDirConfigFile)
 		actualConfigFile, err = os.ReadFile(outputDirConfigFile)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		expectedConfigFile, err = os.ReadFile("test_assets/bundle_with_mult_images/config.yml")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		assert.Equal(t, string(expectedConfigFile), string(actualConfigFile))
 	})
 }
 
 func TestPullNestedBundlesLocalizesImagesLockFile(t *testing.T) {
-	fakeUI := &bundlefakes.FakeUI{}
+	logger := util.NewNoopLevelLogger()
 	pullNestedBundles := true
 
 	t.Run("bundle referencing another bundle in the same repo updates both bundle's imageslock", func(t *testing.T) {
@@ -198,17 +196,17 @@ func TestPullNestedBundlesLocalizesImagesLockFile(t *testing.T) {
 
 		subject := bundle.NewBundle(rootBundle.RefDigest, fakeRegistry.Build())
 		outputPath, err := os.MkdirTemp(os.TempDir(), "test-output-bundle-path")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer os.Remove(outputPath)
 
-		err = subject.Pull(outputPath, fakeUI, pullNestedBundles)
-		assert.NoError(t, err)
+		_, err = subject.Pull(outputPath, logger, pullNestedBundles)
+		require.NoError(t, err)
 
-		assert.DirExists(t, outputPath)
+		require.DirExists(t, outputPath)
 		rootBundleImagesYmlFile := filepath.Join(outputPath, ".imgpkg", "images.yml")
-		assert.FileExists(t, rootBundleImagesYmlFile)
+		require.FileExists(t, rootBundleImagesYmlFile)
 		rootImagesYmlFile, err := os.ReadFile(rootBundleImagesYmlFile)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		assert.Equal(t, fmt.Sprintf(`---
 apiVersion: imgpkg.carvel.dev/v1alpha1
@@ -218,9 +216,9 @@ kind: ImagesLock
 `, randomBundleCollocatedWithRootBundle.RefDigest), string(rootImagesYmlFile))
 
 		outputDirImagesYmlFile := filepath.Join(outputPath, ".imgpkg", "bundles", strings.ReplaceAll(icecreamBundle.Digest, "sha256:", "sha256-"), ".imgpkg", "images.yml")
-		assert.FileExists(t, outputDirImagesYmlFile)
+		require.FileExists(t, outputDirImagesYmlFile)
 		nestedImagesYmlFile, err := os.ReadFile(outputDirImagesYmlFile)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		assert.Equal(t, fmt.Sprintf(`---
 apiVersion: imgpkg.carvel.dev/v1alpha1
@@ -256,16 +254,16 @@ kind: ImagesLock
 		fakePublicRegistry.Build()
 		subject := bundle.NewBundle(fakeRegistry.ReferenceOnTestServer("repo/bundle_icecream_and_apple"), fakeRegistry.Build())
 		outputPath, err := os.MkdirTemp(os.TempDir(), "test-output-bundle-path")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer os.Remove(outputPath)
 
-		err = subject.Pull(outputPath, fakeUI, pullNestedBundles)
-		assert.NoError(t, err)
+		_, err = subject.Pull(outputPath, logger, pullNestedBundles)
+		require.NoError(t, err)
 
 		outputDirImagesYmlFile := filepath.Join(outputPath, ".imgpkg", "bundles", strings.ReplaceAll(icecreamBundle.Digest, "sha256:", "sha256-"), ".imgpkg", "images.yml")
-		assert.FileExists(t, outputDirImagesYmlFile)
+		require.FileExists(t, outputDirImagesYmlFile)
 		actualImagesYmlFile, err := os.ReadFile(outputDirImagesYmlFile)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		assert.Equal(t, fmt.Sprintf(`---
 apiVersion: imgpkg.carvel.dev/v1alpha1
@@ -275,9 +273,9 @@ kind: ImagesLock
 `, randomImageFromFakeRegistry.RefDigest), string(actualImagesYmlFile))
 
 		outputDirImagesYmlFile = filepath.Join(outputPath, ".imgpkg", "bundles", strings.ReplaceAll(appleBundle.Digest, "sha256:", "sha256-"), ".imgpkg", "images.yml")
-		assert.FileExists(t, outputDirImagesYmlFile)
+		require.FileExists(t, outputDirImagesYmlFile)
 		actualImagesYmlFile, err = os.ReadFile(outputDirImagesYmlFile)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		assert.Equal(t, fmt.Sprintf(`---
 apiVersion: imgpkg.carvel.dev/v1alpha1
@@ -289,7 +287,7 @@ kind: ImagesLock
 }
 
 func TestPullNestedBundlesLocalizesImagesLockFileWithLocationOCI(t *testing.T) {
-	fakeUI := &bundlefakes.FakeUI{}
+	logger := util.NewNoopLevelLogger()
 	pullNestedBundles := true
 
 	t.Run("bundle referencing another bundle in the same repo updates both bundle's imageslock", func(t *testing.T) {
@@ -308,7 +306,7 @@ func TestPullNestedBundlesLocalizesImagesLockFileWithLocationOCI(t *testing.T) {
 		})
 
 		locationPath, err := os.MkdirTemp(os.TempDir(), "test-location-path")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer os.Remove(locationPath)
 
 		locationForRootBundle := bundle.ImageLocationsConfig{
@@ -338,17 +336,17 @@ func TestPullNestedBundlesLocalizesImagesLockFileWithLocationOCI(t *testing.T) {
 
 		subject := bundle.NewBundle(rootBundle.RefDigest, fakeRegistry.Build())
 		outputPath, err := os.MkdirTemp(os.TempDir(), "test-output-bundle-path")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer os.Remove(outputPath)
 
-		err = subject.Pull(outputPath, fakeUI, pullNestedBundles)
-		assert.NoError(t, err)
+		_, err = subject.Pull(outputPath, logger, pullNestedBundles)
+		require.NoError(t, err)
 
-		assert.DirExists(t, outputPath)
+		require.DirExists(t, outputPath)
 		rootBundleImagesYmlFile := filepath.Join(outputPath, ".imgpkg", "images.yml")
-		assert.FileExists(t, rootBundleImagesYmlFile)
+		require.FileExists(t, rootBundleImagesYmlFile)
 		rootImagesYmlFile, err := os.ReadFile(rootBundleImagesYmlFile)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		assert.Equal(t, fmt.Sprintf(`---
 apiVersion: imgpkg.carvel.dev/v1alpha1
@@ -360,9 +358,9 @@ kind: ImagesLock
 `, relocatedIcecreamBundle.RefDigest), string(rootImagesYmlFile))
 
 		outputDirImagesYmlFile := filepath.Join(outputPath, ".imgpkg", "bundles", strings.ReplaceAll(relocatedIcecreamBundle.Digest, "sha256:", "sha256-"), ".imgpkg", "images.yml")
-		assert.FileExists(t, outputDirImagesYmlFile)
+		require.FileExists(t, outputDirImagesYmlFile)
 		nestedImagesYmlFile, err := os.ReadFile(outputDirImagesYmlFile)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		assert.Equal(t, fmt.Sprintf(`---
 apiVersion: imgpkg.carvel.dev/v1alpha1
@@ -388,7 +386,7 @@ kind: ImagesLock
 		})
 
 		locationPath, err := os.MkdirTemp(os.TempDir(), "test-location-path")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer os.Remove(locationPath)
 
 		locationForRootBundle := bundle.ImageLocationsConfig{
@@ -406,17 +404,17 @@ kind: ImagesLock
 
 		subject := bundle.NewBundle(rootBundle.RefDigest, fakeRegistry.Build())
 		outputPath, err := os.MkdirTemp(os.TempDir(), "test-output-bundle-path")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer os.Remove(outputPath)
 
-		err = subject.Pull(outputPath, fakeUI, pullNestedBundles)
-		assert.NoError(t, err)
+		_, err = subject.Pull(outputPath, logger, pullNestedBundles)
+		require.NoError(t, err)
 
-		assert.DirExists(t, outputPath)
+		require.DirExists(t, outputPath)
 		rootBundleImagesYmlFile := filepath.Join(outputPath, ".imgpkg", "images.yml")
-		assert.FileExists(t, rootBundleImagesYmlFile)
+		require.FileExists(t, rootBundleImagesYmlFile)
 		rootImagesYmlFile, err := os.ReadFile(rootBundleImagesYmlFile)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		assert.Equal(t, fmt.Sprintf(`---
 apiVersion: imgpkg.carvel.dev/v1alpha1
@@ -428,9 +426,9 @@ kind: ImagesLock
 `, relocatedIcecreamBundle.RefDigest), string(rootImagesYmlFile))
 
 		outputDirImagesYmlFile := filepath.Join(outputPath, ".imgpkg", "bundles", strings.ReplaceAll(relocatedIcecreamBundle.Digest, "sha256:", "sha256-"), ".imgpkg", "images.yml")
-		assert.FileExists(t, outputDirImagesYmlFile)
+		require.FileExists(t, outputDirImagesYmlFile)
 		nestedImagesYmlFile, err := os.ReadFile(outputDirImagesYmlFile)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		assert.Equal(t, fmt.Sprintf(`---
 apiVersion: imgpkg.carvel.dev/v1alpha1
@@ -456,7 +454,7 @@ kind: ImagesLock
 		})
 
 		locationPath, err := os.MkdirTemp(os.TempDir(), "test-location-path")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer os.Remove(locationPath)
 
 		locationForNestedBundle := bundle.ImageLocationsConfig{
@@ -474,17 +472,17 @@ kind: ImagesLock
 
 		subject := bundle.NewBundle(rootBundle.RefDigest, fakeRegistry.Build())
 		outputPath, err := os.MkdirTemp(os.TempDir(), "test-output-bundle-path")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer os.Remove(outputPath)
 
-		err = subject.Pull(outputPath, fakeUI, pullNestedBundles)
-		assert.NoError(t, err)
+		_, err = subject.Pull(outputPath, logger, pullNestedBundles)
+		require.NoError(t, err)
 
-		assert.DirExists(t, outputPath)
+		require.DirExists(t, outputPath)
 		rootBundleImagesYmlFile := filepath.Join(outputPath, ".imgpkg", "images.yml")
-		assert.FileExists(t, rootBundleImagesYmlFile)
+		require.FileExists(t, rootBundleImagesYmlFile)
 		rootImagesYmlFile, err := os.ReadFile(rootBundleImagesYmlFile)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		assert.Equal(t, fmt.Sprintf(`---
 apiVersion: imgpkg.carvel.dev/v1alpha1
@@ -496,9 +494,9 @@ kind: ImagesLock
 `, relocatedIcecreamBundle.RefDigest), string(rootImagesYmlFile))
 
 		outputDirImagesYmlFile := filepath.Join(outputPath, ".imgpkg", "bundles", strings.ReplaceAll(relocatedIcecreamBundle.Digest, "sha256:", "sha256-"), ".imgpkg", "images.yml")
-		assert.FileExists(t, outputDirImagesYmlFile)
+		require.FileExists(t, outputDirImagesYmlFile)
 		nestedImagesYmlFile, err := os.ReadFile(outputDirImagesYmlFile)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		assert.Equal(t, fmt.Sprintf(`---
 apiVersion: imgpkg.carvel.dev/v1alpha1
@@ -518,7 +516,7 @@ kind: ImagesLock
 		})
 
 		locationPath, err := os.MkdirTemp(os.TempDir(), "test-location-path")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer os.Remove(locationPath)
 
 		nestedImageRef := "repo/root-bundle@" + randomImageColocatedWithRootBundle.Digest
@@ -538,17 +536,17 @@ kind: ImagesLock
 
 		subject := bundle.NewBundle(rootBundle.RefDigest, fakeRegistry.Build())
 		outputPath, err := os.MkdirTemp(os.TempDir(), "test-output-bundle-path")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer os.Remove(outputPath)
 
-		err = subject.Pull(outputPath, fakeUI, pullNestedBundles)
-		assert.NoError(t, err)
+		_, err = subject.Pull(outputPath, logger, pullNestedBundles)
+		require.NoError(t, err)
 
-		assert.DirExists(t, outputPath)
+		require.DirExists(t, outputPath)
 		rootBundleImagesYmlFile := filepath.Join(outputPath, ".imgpkg", "images.yml")
-		assert.FileExists(t, rootBundleImagesYmlFile)
+		require.FileExists(t, rootBundleImagesYmlFile)
 		rootImagesYmlFile, err := os.ReadFile(rootBundleImagesYmlFile)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		assert.Equal(t, fmt.Sprintf(`---
 apiVersion: imgpkg.carvel.dev/v1alpha1
@@ -565,7 +563,7 @@ func TestPullBundleOutputToUser(t *testing.T) {
 
 	t.Run("bundle referencing an image", func(t *testing.T) {
 		output := bytes.NewBufferString("")
-		writerUI := ui.NewWriterUI(output, output, nil)
+		logger := util.NewUILevelLogger(util.LogWarn, util.NewBufferLogger(output))
 
 		fakeRegistry := helpers.NewFakeRegistry(t, &helpers.Logger{LogLevel: helpers.LogDebug})
 		defer fakeRegistry.CleanUp()
@@ -575,11 +573,11 @@ func TestPullBundleOutputToUser(t *testing.T) {
 
 		subject := bundle.NewBundle(bundleName, fakeRegistry.Build())
 		outputPath, err := os.MkdirTemp(os.TempDir(), "test-output-bundle-path")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer os.Remove(outputPath)
 
-		err = subject.Pull(outputPath, writerUI, pullNestedBundles)
-		assert.NoError(t, err)
+		_, err = subject.Pull(outputPath, logger, pullNestedBundles)
+		require.NoError(t, err)
 
 		assert.Regexp(t,
 			fmt.Sprintf(`Pulling bundle '%s@sha256:.*'
@@ -591,7 +589,7 @@ One or more images not found in bundle repo; skipping lock file update`, bundleN
 
 	t.Run("bundle referencing another bundle", func(t *testing.T) {
 		output := bytes.NewBufferString("")
-		writerUI := ui.NewWriterUI(output, output, nil)
+		logger := util.NewUILevelLogger(util.LogWarn, util.NewBufferLogger(output))
 		fakeRegistry := helpers.NewFakeRegistry(t, &helpers.Logger{LogLevel: helpers.LogDebug})
 		defer fakeRegistry.CleanUp()
 
@@ -602,11 +600,11 @@ One or more images not found in bundle repo; skipping lock file update`, bundleN
 
 		subject := bundle.NewBundle(bundleName, fakeRegistry.Build())
 		outputPath, err := os.MkdirTemp(os.TempDir(), "test-output-bundle-path")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer os.Remove(outputPath)
 
-		err = subject.Pull(outputPath, writerUI, pullNestedBundles)
-		assert.NoError(t, err)
+		_, err = subject.Pull(outputPath, logger, pullNestedBundles)
+		require.NoError(t, err)
 
 		assert.Regexp(t,
 			fmt.Sprintf(`Pulling bundle '%s@sha256:.*'
@@ -620,7 +618,7 @@ One or more images not found in bundle repo; skipping lock file update`, bundleN
 func TestPullAllNestedBundlesOutputToUser(t *testing.T) {
 	pullNestedBundles := true
 	output := bytes.NewBufferString("")
-	writerUI := ui.NewWriterUI(output, output, nil)
+	logger := util.NewUILevelLogger(util.LogWarn, util.NewBufferLogger(output))
 
 	t.Run("bundle referencing another collocated bundle", func(t *testing.T) {
 		defer output.Reset()
@@ -644,11 +642,11 @@ func TestPullAllNestedBundlesOutputToUser(t *testing.T) {
 
 		subject := bundle.NewBundle(rootBundle.RefDigest, fakeRegistry.Build())
 		outputPath, err := os.MkdirTemp(os.TempDir(), "test-output-bundle-path")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer os.Remove(outputPath)
 
-		err = subject.Pull(outputPath, writerUI, pullNestedBundles)
-		assert.NoError(t, err)
+		_, err = subject.Pull(outputPath, logger, pullNestedBundles)
+		require.NoError(t, err)
 
 		assert.Regexp(t,
 			fmt.Sprintf(`Pulling bundle .*
@@ -676,11 +674,11 @@ The bundle repo \(%s\) is hosting every image specified in the bundle's Images L
 
 		subject := bundle.NewBundle(bundleName, fakeRegistry.Build())
 		outputPath, err := os.MkdirTemp(os.TempDir(), "test-output-bundle-path")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer os.Remove(outputPath)
 
-		err = subject.Pull(outputPath, writerUI, pullNestedBundles)
-		assert.NoError(t, err)
+		_, err = subject.Pull(outputPath, logger, pullNestedBundles)
+		require.NoError(t, err)
 
 		icecreamBundleName := fakeRegistry.ReferenceOnTestServer("icecream/bundle")
 		assert.Regexp(t,
@@ -720,13 +718,13 @@ One or more images not found in bundle repo; skipping lock file update`, bundleN
 
 		subject := bundle.NewBundle(fakeRegistry.ReferenceOnTestServer("repo/bundle_with_multiple_bundle"), fakeRegistry.Build())
 		outputPath, err := os.MkdirTemp(os.TempDir(), "test-output-bundle-path")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer os.Remove(outputPath)
 
-		err = subject.Pull(outputPath, writerUI, pullNestedBundles)
-		assert.NoError(t, err)
+		_, err = subject.Pull(outputPath, logger, pullNestedBundles)
+		require.NoError(t, err)
 
-		assert.DirExists(t, outputPath)
+		require.DirExists(t, outputPath)
 
 		assert.Regexp(t,
 			fmt.Sprintf(`Pulling bundle '%s'
@@ -763,12 +761,12 @@ One or more images not found in bundle repo; skipping lock file update`, bundleW
 
 		subject := bundle.NewBundle(fakeRegistry.ReferenceOnTestServer("repo/bundle_icecream_with_single_bundle"), fakeRegistry.Build())
 		outputPath, err := os.MkdirTemp(os.TempDir(), "test-output-bundle-path")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer os.Remove(outputPath)
 
 		// test subject
-		err = subject.Pull(outputPath, writerUI, pullNestedBundles)
-		assert.NoError(t, err)
+		_, err = subject.Pull(outputPath, logger, pullNestedBundles)
+		require.NoError(t, err)
 
 		//assert log message
 		assert.Regexp(t,
@@ -798,7 +796,7 @@ func TestNoteCopy(t *testing.T) {
 		})
 
 		locationPath, err := os.MkdirTemp(os.TempDir(), "test-location-path")
-		assert.NoError(t, err)
+		require.NoError(t, err)
 		defer os.Remove(locationPath)
 
 		locationForRootBundle := bundle.ImageLocationsConfig{
@@ -815,19 +813,17 @@ func TestNoteCopy(t *testing.T) {
 		reg := fakeRegistry.Build()
 
 		rootBundleHash, err := regv1.NewHash(rootBundle.Digest)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		locationsImageTag := fmt.Sprintf("%s-%s.image-locations.imgpkg", rootBundleHash.Algorithm, rootBundleHash.Hex)
 		fakeRegistry.WithImmutableTags("repo/bundle-with-collocated-bundles", locationsImageTag)
 		defer fakeRegistry.ResetHandler()
 
-		confUI := goui.NewConfUI(goui.NewNoopLogger())
-		defer confUI.Flush()
-		uiLogger := util.NewUILevelLogger(util.LogDebug, confUI)
+		uiLogger := util.NewUILevelLogger(util.LogDebug, util.NewNoopLogger())
 
 		subject := bundle.NewBundleFromPlainImage(plainimage.NewFetchedPlainImageWithTag(rootBundle.RefDigest, "", rootBundle.Image), reg)
 		_, _, err = subject.AllImagesLockRefs(1, uiLogger)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 
 		processedImages := imageset.NewProcessedImages()
 		processedImages.Add(imageset.ProcessedImage{
@@ -846,6 +842,6 @@ func TestNoteCopy(t *testing.T) {
 		})
 
 		err = subject.NoteCopy(processedImages, reg, uiLogger)
-		assert.NoError(t, err)
+		require.NoError(t, err)
 	})
 }

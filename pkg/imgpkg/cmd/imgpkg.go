@@ -5,6 +5,7 @@ package cmd
 
 import (
 	"io"
+	"os"
 
 	"github.com/cppforlife/cobrautil"
 	"github.com/cppforlife/go-cli-ui/ui"
@@ -40,7 +41,7 @@ func NewImgpkgCmd(o *ImgpkgOptions) *cobra.Command {
 	// setting output for cmd.Help()
 	blockWriter := uiBlockWriter{o.ui}
 	cmd.SetOut(blockWriter)
-	cmd.SetErr(blockWriter)
+	cmd.SetErr(os.Stderr)
 
 	o.UIFlags.Set(cmd)
 	o.DebugFlags.Set(cmd)
@@ -60,6 +61,10 @@ func NewImgpkgCmd(o *ImgpkgOptions) *cobra.Command {
 	cobrautil.VisitCommands(cmd, cobrautil.ReconfigureCmdWithSubcmd)
 	cobrautil.VisitCommands(cmd, cobrautil.DisallowExtraArgs)
 
+	// Completion command have to be added after the DisallowExtraArgs
+	// This configurations forces all nodes to do not accept extra args, but the completion requires 1 extra arg
+	cmd.AddCommand(NewCompletionCmd())
+
 	cobrautil.VisitCommands(cmd, cobrautil.WrapRunEForCmd(func(*cobra.Command, []string) error {
 		o.UIFlags.ConfigureUI(o.ui)
 		o.DebugFlags.ConfigureDebug()
@@ -67,11 +72,6 @@ func NewImgpkgCmd(o *ImgpkgOptions) *cobra.Command {
 	}))
 
 	cobrautil.VisitCommands(cmd, cobrautil.WrapRunEForCmd(cobrautil.ResolveFlagsForCmd))
-
-	// Completion command have to be added after the VisitCommands
-	// This due to the ReconfigureLeafCmds that we do not want to have enforced for the completion
-	// This configurations forces all nodes to do not accept extra args, but the completion requires 1 extra arg
-	cmd.AddCommand(NewCompletionCmd())
 
 	return cmd
 }

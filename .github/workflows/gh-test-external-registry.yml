@@ -5,7 +5,7 @@ on:
     branches:
       - develop
   pull_request_target:
-    types: [opened, reopened, synchronize]
+    types: [opened, reopened, synchronize, edited]
 permissions:
   contents: read
   actions: none
@@ -26,7 +26,7 @@ jobs:
     - name: Set up Go 1.x
       uses: actions/setup-go@v1
       with:
-        go-version: "1.17"
+        go-version: "1.19.5"
     - name: Check out code into the Go module directory
       uses: actions/checkout@v2
       with:
@@ -63,7 +63,7 @@ jobs:
       - name: Set up Go 1.x
         uses: actions/setup-go@v1
         with:
-          go-version: "1.17"
+          go-version: "1.19.5"
       - name: Check out code into the Go module directory
         uses: actions/checkout@v2
         with:

@@ -12,28 +12,35 @@ import (
 	"runtime"
 	"strings"
 
-	goui "github.com/cppforlife/go-cli-ui/ui"
 	regv1 "github.com/google/go-containerregistry/pkg/v1"
 )
+
+// Logger used to print messages
+type Logger interface {
+	Logf(msg string, args ...interface{})
+}
 
 type DirImage struct {
 	dirPath     string
 	img         regv1.Image
 	shouldChown bool
-	ui          goui.UI
+	logger      Logger
 }
 
-func NewDirImage(dirPath string, img regv1.Image, ui goui.UI) *DirImage {
-	return &DirImage{dirPath, img, os.Getuid() == 0, ui}
+// NewDirImage given an OCI Image representation creates a struct that will allow that image to be
+// extracted into the provided directory
+func NewDirImage(dirPath string, img regv1.Image, logger Logger) *DirImage {
+	return &DirImage{dirPath, img, os.Getuid() == 0, logger}
 }
 
+// AsDirectory extracts the OCI image to the provided location in disk
 func (i *DirImage) AsDirectory() error {
 	err := os.RemoveAll(i.dirPath)
 	if err != nil {
 		return fmt.Errorf("Removing output directory: %s", err)
 	}
 
-	err = os.MkdirAll(i.dirPath, 0700)
+	err = os.MkdirAll(i.dirPath, 0777)
 	if err != nil {
 		return fmt.Errorf("Creating output directory: %s", err)
 	}
@@ -49,7 +56,7 @@ func (i *DirImage) AsDirectory() error {
 			return err
 		}
 
-		i.ui.BeginLinef("Extracting layer '%s' (%d/%d)\n", digest, idx+1, len(layers))
+		i.logger.Logf("Extracting layer '%s' (%d/%d)\n", digest, idx+1, len(layers))
 
 		layerStream, err := imgLayer.Uncompressed()
 		if err != nil {
@@ -81,7 +88,7 @@ func (i *DirImage) writeLayer(stream io.Reader) error {
 			return err
 		}
 
-		path := filepath.Join(i.dirPath, filepath.Clean(hdr.Name))
+		path := i.hydrateFilepath(hdr.Name)
 		base := filepath.Base(path)
 
 		const (
@@ -121,23 +128,27 @@ func (i *DirImage) writeLayer(stream io.Reader) error {
 // Taken from https://github.com/concourse/go-archive/blob/f26802964d15194bddb07bf116ea567c56af973f/tarfs/extract.go
 
 func (i *DirImage) extractTarEntry(header *tar.Header, input io.Reader) error {
-	path := filepath.Join(i.dirPath, header.Name)
+	path := i.hydrateFilepath(header.Name)
 	mode := header.FileInfo().Mode()
 
-	err := os.MkdirAll(filepath.Dir(path), 0700)
+	// copy user permissions to group and other
+	userPermission := int64(mode & 0700)
+	permMode := os.FileMode(userPermission | userPermission>>3 | userPermission>>6)
+
+	err := os.MkdirAll(filepath.Dir(path), 0777)
 	if err != nil {
 		return err
 	}
 
 	switch header.Typeflag {
 	case tar.TypeDir:
-		err := os.MkdirAll(path, mode)
+		err := os.MkdirAll(path, permMode)
 		if err != nil {
 			return err
 		}
 
 	case tar.TypeReg, tar.TypeRegA:
-		file, err := os.Create(path)
+		file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, permMode)
 		if err != nil {
 			return err
 		}
@@ -168,25 +179,8 @@ func (i *DirImage) extractTarEntry(header *tar.Header, input io.Reader) error {
 		}
 	}
 
-	// must be done after chown
-	err = lchmod(header, path, mode)
-	if err != nil {
-		return err
-	}
-
 	// must be done after everything
 	return lchtimes(header, path)
-}
-
-func lchmod(header *tar.Header, path string, mode os.FileMode) error {
-	if header.Typeflag == tar.TypeLink {
-		if fi, err := os.Lstat(header.Linkname); err == nil && (fi.Mode()&os.ModeSymlink == 0) {
-			return os.Chmod(path, mode)
-		}
-	} else if header.Typeflag != tar.TypeSymlink {
-		return os.Chmod(path, mode)
-	}
-	return nil
 }
 
 func lchtimes(header *tar.Header, path string) error {
@@ -205,4 +199,17 @@ func lchtimes(header *tar.Header, path string) error {
 	}
 
 	return nil
+}
+
+// hydrateFilepath ensures that the file is correct based on the OS.
+func (i *DirImage) hydrateFilepath(fPath string) string {
+	var lPath string
+	// We need to check the existance of \ type paths in the images because in previous versions of imgpkg images that
+	// were created on Windows would have the path using \ instead of the new OS-agnostic version
+	if strings.Contains(fPath, "\\") {
+		lPath = filepath.Join(strings.Split(fPath, "\\")...)
+	} else {
+		lPath = filepath.Join(strings.Split(fPath, "/")...)
+	}
+	return filepath.Join(i.dirPath, lPath)
 }

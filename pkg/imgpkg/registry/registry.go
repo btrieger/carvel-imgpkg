@@ -10,7 +10,6 @@ import (
 	"io/ioutil"
 	"net/http"
 	"regexp"
-	"runtime"
 	"sync"
 	"time"
 
@@ -20,6 +19,7 @@ import (
 	regv1 "github.com/google/go-containerregistry/pkg/v1"
 	regremote "github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
+	"github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/internal/util"
 	"github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/registry/auth"
 )
 
@@ -39,10 +39,40 @@ type Opts struct {
 	Token    string
 	Anon     bool
 
+	EnableIaasAuthProviders bool
+
 	ResponseHeaderTimeout time.Duration
 	RetryCount            int
 
-	EnvironFunc func() []string
+	EnvironFunc     func() []string
+	ActiveKeychains []auth.IAASKeychain
+}
+
+// DeepCopy the options to a new struct
+func (o Opts) DeepCopy() Opts {
+	result := Opts{
+		VerifyCerts:                   o.VerifyCerts,
+		Insecure:                      o.Insecure,
+		IncludeNonDistributableLayers: o.IncludeNonDistributableLayers,
+		MutualTLS:                     o.MutualTLS,
+		ClientCertificate:             o.ClientCertificate,
+		ClientKey:                     o.ClientKey,
+		Username:                      o.Username,
+		Password:                      o.Password,
+		Token:                         o.Token,
+		Anon:                          o.Anon,
+		EnableIaasAuthProviders:       o.EnableIaasAuthProviders,
+		ResponseHeaderTimeout:         o.ResponseHeaderTimeout,
+		RetryCount:                    o.RetryCount,
+		EnvironFunc:                   o.EnvironFunc,
+	}
+	for _, path := range o.CACertPaths {
+		result.CACertPaths = append(result.CACertPaths, path)
+	}
+	for _, keychain := range o.ActiveKeychains {
+		result.ActiveKeychains = append(result.ActiveKeychains, keychain)
+	}
+	return result
 }
 
 // Registry Interface to access the registry
@@ -54,16 +84,18 @@ type Registry interface {
 	FirstImageExists(digests []string) (string, error)
 
 	MultiWrite(imageOrIndexesToUpload map[regname.Reference]regremote.Taggable, concurrency int, updatesCh chan regv1.Update) error
-	WriteImage(reference regname.Reference, image regv1.Image) error
+	WriteImage(regname.Reference, regv1.Image, chan regv1.Update) error
 	WriteIndex(reference regname.Reference, index regv1.ImageIndex) error
 	WriteTag(tag regname.Tag, taggable regremote.Taggable) error
 
 	ListTags(repo regname.Repository) ([]string, error)
 
 	CloneWithSingleAuth(imageRef regname.Tag) (Registry, error)
+	CloneWithLogger(logger util.ProgressLogger) Registry
 }
 
 // ImagesReader Interface for Reading Images
+//
 //go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 . ImagesReader
 type ImagesReader interface {
 	Get(regname.Reference) (*regremote.Descriptor, error)
@@ -74,35 +106,48 @@ type ImagesReader interface {
 }
 
 // ImagesReaderWriter Interface for Reading and Writing Images
+//
 //go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 . ImagesReaderWriter
 type ImagesReaderWriter interface {
 	ImagesReader
 	MultiWrite(imageOrIndexesToUpload map[regname.Reference]regremote.Taggable, concurrency int, updatesCh chan regv1.Update) error
-	WriteImage(regname.Reference, regv1.Image) error
+	WriteImage(regname.Reference, regv1.Image, chan regv1.Update) error
 	WriteIndex(regname.Reference, regv1.ImageIndex) error
 	WriteTag(regname.Tag, regremote.Taggable) error
 
 	CloneWithSingleAuth(imageRef regname.Tag) (Registry, error)
+	CloneWithLogger(logger util.ProgressLogger) Registry
 }
 
 var _ Registry = &SimpleRegistry{}
+
+// RoundTripperStorage Storage of RoundTripper that will be used to talk to the registry
+type RoundTripperStorage interface {
+	RoundTripper(repo regname.Repository, scope string) http.RoundTripper
+	CreateRoundTripper(reg regname.Registry, auth regauthn.Authenticator, scope string) (http.RoundTripper, error)
+	BaseRoundTripper() http.RoundTripper
+}
 
 // SimpleRegistry Implements Registry interface
 type SimpleRegistry struct {
 	remoteOpts      []regremote.Option
 	refOpts         []regname.Option
 	keychain        regauthn.Keychain
-	roundTrippers   *RoundTripperStorage
+	roundTrippers   RoundTripperStorage
 	transportAccess *sync.Mutex
 }
 
 // NewSimpleRegistry Builder for a Simple Registry
-func NewSimpleRegistry(opts Opts, regOpts ...regremote.Option) (*SimpleRegistry, error) {
+func NewSimpleRegistry(opts Opts) (*SimpleRegistry, error) {
 	httpTran, err := newHTTPTransport(opts)
 	if err != nil {
 		return nil, fmt.Errorf("Creating registry HTTP transport: %s", err)
 	}
+	return NewSimpleRegistryWithTransport(opts, httpTran)
+}
 
+// NewSimpleRegistryWithTransport Creates a new Simple Registry using the provided transport
+func NewSimpleRegistryWithTransport(opts Opts, rTripper http.RoundTripper, regOpts ...regremote.Option) (*SimpleRegistry, error) {
 	var refOpts []regname.Option
 	if opts.Insecure {
 		refOpts = append(refOpts, regname.Insecure)
@@ -110,10 +155,12 @@ func NewSimpleRegistry(opts Opts, regOpts ...regremote.Option) (*SimpleRegistry,
 
 	keychain, err := Keychain(
 		auth.KeychainOpts{
-			Username: opts.Username,
-			Password: opts.Password,
-			Token:    opts.Token,
-			Anon:     opts.Anon,
+			Username:                opts.Username,
+			Password:                opts.Password,
+			Token:                   opts.Token,
+			Anon:                    opts.Anon,
+			EnableIaasAuthProviders: opts.EnableIaasAuthProviders,
+			ActiveKeychains:         opts.ActiveKeychains,
 		},
 		opts.EnvironFunc,
 	)
@@ -142,9 +189,9 @@ func NewSimpleRegistry(opts Opts, regOpts ...regremote.Option) (*SimpleRegistry,
 	}
 	regRemoteOptions = append(regRemoteOptions, regremote.WithRetryBackoff(retryBackoff))
 
-	baseRoundTripper := http.RoundTripper(httpTran)
+	baseRoundTripper := rTripper
 	if logs.Enabled(logs.Debug) {
-		baseRoundTripper = transport.NewLogger(httpTran)
+		baseRoundTripper = transport.NewLogger(rTripper)
 	}
 
 	// Wrap the transport in something that can retry network flakes.
@@ -154,7 +201,7 @@ func NewSimpleRegistry(opts Opts, regOpts ...regremote.Option) (*SimpleRegistry,
 		remoteOpts:      regRemoteOptions,
 		refOpts:         refOpts,
 		keychain:        keychain,
-		roundTrippers:   NewRoundTripperStorage(baseRoundTripper),
+		roundTrippers:   NewMultiRoundTripperStorage(baseRoundTripper),
 		transportAccess: &sync.Mutex{},
 	}, nil
 }
@@ -169,14 +216,30 @@ func (r SimpleRegistry) CloneWithSingleAuth(imageRef regname.Tag) (Registry, err
 	}
 
 	keychain := auth.NewSingleAuthKeychain(imgAuth)
+	rt := r.roundTrippers.RoundTripper(imageRef.Repository, imageRef.Scope(transport.PullScope))
+	if rt == nil {
+		rt = r.roundTrippers.BaseRoundTripper()
+	}
 
 	return &SimpleRegistry{
 		remoteOpts:      r.remoteOpts,
 		refOpts:         r.refOpts,
 		keychain:        keychain,
-		roundTrippers:   r.roundTrippers,
+		roundTrippers:   NewSingleTripperStorage(rt),
 		transportAccess: &sync.Mutex{},
 	}, nil
+}
+
+// CloneWithLogger Clones the provided registry updating the progress logger to NoTTYLogger
+// that does not display the progress bar
+func (r SimpleRegistry) CloneWithLogger(_ util.ProgressLogger) Registry {
+	return &SimpleRegistry{
+		remoteOpts:      r.remoteOpts,
+		refOpts:         r.refOpts,
+		keychain:        r.keychain,
+		roundTrippers:   r.roundTrippers,
+		transportAccess: &sync.Mutex{},
+	}
 }
 
 // readOpts Returns the readOpts + the keychain
@@ -228,7 +291,7 @@ func (r *SimpleRegistry) Get(ref regname.Reference) (*regremote.Descriptor, erro
 	if err != nil {
 		return nil, err
 	}
-	opts, err := r.readOpts(ref)
+	opts, err := r.readOpts(overriddenRef)
 	if err != nil {
 		return nil, err
 	}
@@ -245,7 +308,7 @@ func (r *SimpleRegistry) Digest(ref regname.Reference) (regv1.Hash, error) {
 		return regv1.Hash{}, err
 	}
 
-	opts, err := r.readOpts(ref)
+	opts, err := r.readOpts(overriddenRef)
 	if err != nil {
 		return regv1.Hash{}, err
 	}
@@ -271,7 +334,7 @@ func (r *SimpleRegistry) Image(ref regname.Reference) (regv1.Image, error) {
 		return nil, err
 	}
 
-	opts, err := r.readOpts(ref)
+	opts, err := r.readOpts(overriddenRef)
 	if err != nil {
 		return nil, err
 	}
@@ -308,7 +371,7 @@ func (r *SimpleRegistry) MultiWrite(imageOrIndexesToUpload map[regname.Reference
 }
 
 // WriteImage Upload Image to registry
-func (r *SimpleRegistry) WriteImage(ref regname.Reference, img regv1.Image) error {
+func (r *SimpleRegistry) WriteImage(ref regname.Reference, img regv1.Image, updatesCh chan regv1.Update) error {
 	if err := r.validateRef(ref); err != nil {
 		return err
 	}
@@ -317,11 +380,13 @@ func (r *SimpleRegistry) WriteImage(ref regname.Reference, img regv1.Image) erro
 		return err
 	}
 
-	opts, err := r.writeOpts(ref)
+	opts, err := r.writeOpts(overriddenRef)
 	if err != nil {
 		return err
 	}
-
+	if updatesCh != nil {
+		opts = append(opts, regremote.WithProgress(updatesCh))
+	}
 	err = regremote.Write(overriddenRef, img, opts...)
 	if err != nil {
 		return fmt.Errorf("Writing image: %s", err)
@@ -339,7 +404,7 @@ func (r *SimpleRegistry) Index(ref regname.Reference) (regv1.ImageIndex, error) 
 	if err != nil {
 		return nil, err
 	}
-	opts, err := r.readOpts(ref)
+	opts, err := r.readOpts(overriddenRef)
 	if err != nil {
 		return nil, err
 	}
@@ -356,7 +421,7 @@ func (r *SimpleRegistry) WriteIndex(ref regname.Reference, idx regv1.ImageIndex)
 		return err
 	}
 
-	opts, err := r.writeOpts(ref)
+	opts, err := r.writeOpts(overriddenRef)
 	if err != nil {
 		return err
 	}
@@ -379,7 +444,7 @@ func (r *SimpleRegistry) WriteTag(ref regname.Tag, taggagle regremote.Taggable) 
 		return err
 	}
 
-	opts, err := r.writeOpts(ref)
+	opts, err := r.writeOpts(overriddenRef)
 	if err != nil {
 		return err
 	}
@@ -398,7 +463,7 @@ func (r *SimpleRegistry) ListTags(repo regname.Repository) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	repoRef, err := regname.ParseReference(overriddenRepo.String())
+	repoRef, err := regname.ParseReference(overriddenRepo.String(), r.refOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -429,19 +494,10 @@ func (r *SimpleRegistry) FirstImageExists(digests []string) (string, error) {
 func newHTTPTransport(opts Opts) (*http.Transport, error) {
 	var pool *x509.CertPool
 
-	// workaround for windows not returning system certs via x509.SystemCertPool() See: https://github.com/golang/go/issues/16736
-	// instead windows lazily fetches ca certificates (over the network) as needed during cert verification time.
-	// to opt-into that tls.Config.RootCAs is set to nil on windows.
-	if runtime.GOOS != "windows" {
-		var err error
-		pool, err = x509.SystemCertPool()
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	if runtime.GOOS == "windows" && len(opts.CACertPaths) > 0 {
-		pool = x509.NewCertPool()
+	var err error
+	pool, err = x509.SystemCertPool()
+	if err != nil {
+		return nil, err
 	}
 
 	if len(opts.CACertPaths) > 0 {

@@ -6,17 +6,18 @@ package cmd
 import (
 	"github.com/cppforlife/go-cli-ui/ui"
 	uitable "github.com/cppforlife/go-cli-ui/ui/table"
-	regname "github.com/google/go-containerregistry/pkg/name"
 	"github.com/spf13/cobra"
-	"github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/registry"
+	v1 "github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/v1"
+	"strings"
 )
 
 type TagListOptions struct {
 	ui ui.UI
 
-	ImageFlags    ImageFlags
-	RegistryFlags RegistryFlags
-	Digests       bool
+	ImageFlags          ImageFlags
+	RegistryFlags       RegistryFlags
+	Digests             bool
+	IncludeInternalTags bool
 }
 
 func NewTagListOptions(ui ui.UI) *TagListOptions {
@@ -34,21 +35,12 @@ func NewTagListCmd(o *TagListOptions) *cobra.Command {
 	o.RegistryFlags.Set(cmd)
 	// Too slow to resolve each tag to digest individually (no bulk API).
 	cmd.Flags().BoolVar(&o.Digests, "digests", false, "Include digests")
+	cmd.Flags().BoolVar(&o.IncludeInternalTags, "imgpkg-internal-tags", false, "Include internal .imgpkg tags")
 	return cmd
 }
 
 func (t *TagListOptions) Run() error {
-	reg, err := registry.NewSimpleRegistry(t.RegistryFlags.AsRegistryOpts())
-	if err != nil {
-		return err
-	}
-
-	ref, err := regname.ParseReference(t.ImageFlags.Image, regname.WeakValidation)
-	if err != nil {
-		return err
-	}
-
-	tags, err := reg.ListTags(ref.Context())
+	tagInfo, err := v1.TagList(t.ImageFlags.Image, t.Digests, t.RegistryFlags.AsRegistryOpts())
 	if err != nil {
 		return err
 	}
@@ -70,27 +62,13 @@ func (t *TagListOptions) Run() error {
 		},
 	}
 
-	for _, tag := range tags {
-		var digest string
-
-		if t.Digests {
-			tagRef, err := regname.NewTag(ref.Context().String()+":"+tag, regname.WeakValidation)
-			if err != nil {
-				return err
-			}
-
-			hash, err := reg.Digest(tagRef)
-			if err != nil {
-				return err
-			}
-
-			digest = hash.String()
+	for _, tag := range tagInfo.Tags {
+		if !strings.HasSuffix(tag.Tag, ".imgpkg") || t.IncludeInternalTags {
+			table.Rows = append(table.Rows, []uitable.Value{
+				uitable.NewValueString(tag.Tag),
+				uitable.NewValueString(tag.Digest),
+			})
 		}
-
-		table.Rows = append(table.Rows, []uitable.Value{
-			uitable.NewValueString(tag),
-			uitable.NewValueString(digest),
-		})
 	}
 
 	t.ui.PrintTable(table)

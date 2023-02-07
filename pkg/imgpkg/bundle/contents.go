@@ -9,11 +9,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/cppforlife/go-cli-ui/ui"
 	regname "github.com/google/go-containerregistry/pkg/name"
 	regv1 "github.com/google/go-containerregistry/pkg/v1"
 	regremote "github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/internal/util"
 	"github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/plainimage"
+	"github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/registry"
 )
 
 const (
@@ -30,24 +31,27 @@ type Contents struct {
 //go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 . ImagesMetadataWriter
 type ImagesMetadataWriter interface {
 	ImagesMetadata
-	WriteImage(regname.Reference, regv1.Image) error
+	WriteImage(regname.Reference, regv1.Image, chan regv1.Update) error
 	WriteTag(ref regname.Tag, taggagle regremote.Taggable) error
+	CloneWithLogger(logger util.ProgressLogger) registry.Registry
 }
 
 func NewContents(paths []string, excludedPaths []string) Contents {
 	return Contents{paths: paths, excludedPaths: excludedPaths}
 }
 
-func (b Contents) Push(uploadRef regname.Tag, registry ImagesMetadataWriter, ui ui.UI) (string, error) {
+// Push the contents of the bundle to the registry as an OCI Image
+func (b Contents) Push(uploadRef regname.Tag, registry ImagesMetadataWriter, logger Logger) (string, error) {
 	err := b.validate()
 	if err != nil {
 		return "", err
 	}
 
 	labels := map[string]string{BundleConfigLabel: "true"}
-	return plainimage.NewContents(b.paths, b.excludedPaths).Push(uploadRef, labels, registry, ui)
+	return plainimage.NewContents(b.paths, b.excludedPaths).Push(uploadRef, labels, registry, logger)
 }
 
+// PresentsAsBundle checks if the provided folders have the needed structure to be a bundle
 func (b Contents) PresentsAsBundle() (bool, error) {
 	imgpkgDirs, err := b.findImgpkgDirs()
 	if err != nil {

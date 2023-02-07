@@ -7,32 +7,32 @@ import (
 	"fmt"
 	"sync"
 
-	goui "github.com/cppforlife/go-cli-ui/ui"
 	regname "github.com/google/go-containerregistry/pkg/name"
 	regv1 "github.com/google/go-containerregistry/pkg/v1"
 	regremote "github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/imagedesc"
+	"github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/imagedigest"
 	"github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/internal/util"
 	"github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/registry"
 )
 
 type Logger interface {
-	WriteStr(str string, args ...interface{}) error
+	Logf(str string, args ...interface{})
 }
 
 type ImageSet struct {
 	concurrency int
-	ui          goui.UI
+	logger      Logger
+	tagGen      util.TagGenerator
 }
 
 // NewImageSet constructor for creating an ImageSet
-func NewImageSet(concurrency int, ui goui.UI) ImageSet {
-	return ImageSet{concurrency, ui}
+func NewImageSet(concurrency int, logger Logger, tagGen util.TagGenerator) ImageSet {
+	return ImageSet{concurrency, logger, tagGen}
 }
 
 func (i ImageSet) Relocate(foundImages *UnprocessedImageRefs,
 	importRepo regname.Repository, registry registry.ImagesReaderWriter) (*ProcessedImages, error) {
-
 	ids, err := i.Export(foundImages, registry)
 	if err != nil {
 		return nil, err
@@ -48,8 +48,8 @@ func (i ImageSet) Relocate(foundImages *UnprocessedImageRefs,
 func (i ImageSet) Export(foundImages *UnprocessedImageRefs,
 	imagesMetadata registry.ImagesReader) (*imagedesc.ImageRefDescriptors, error) {
 
-	i.ui.BeginLinef("exporting %d images...\n", len(foundImages.All()))
-	defer func() { i.ui.BeginLinef("exported %d images\n", len(foundImages.All())) }()
+	i.logger.Logf("exporting %d images...\n", len(foundImages.All()))
+	defer func() { i.logger.Logf("exported %d images\n", len(foundImages.All())) }()
 
 	var refs []imagedesc.Metadata
 
@@ -59,8 +59,8 @@ func (i ImageSet) Export(foundImages *UnprocessedImageRefs,
 			return nil, err
 		}
 
-		i.ui.BeginLinef("will export %s\n", img.DigestRef)
-		refs = append(refs, imagedesc.Metadata{Ref: ref, Tag: img.Tag, Labels: img.Labels})
+		i.logger.Logf("will export %s\n", img.DigestRef)
+		refs = append(refs, imagedesc.Metadata{Ref: ref, Tag: img.Tag, Labels: img.Labels, OrigRef: img.OrigRef})
 	}
 
 	ids, err := imagedesc.NewImageRefDescriptors(refs, imagesMetadata)
@@ -76,7 +76,7 @@ func (i *ImageSet) Import(imgOrIndexes []imagedesc.ImageOrIndex,
 
 	importedImages := NewProcessedImages()
 
-	i.ui.BeginLinef("importing %d images...\n", len(imgOrIndexes))
+	i.logger.Logf("importing %d images...\n", len(imgOrIndexes))
 
 	importThrottle := util.NewThrottle(i.concurrency)
 
@@ -147,19 +147,24 @@ func checkForAnyAsyncErrors(imgOrIndexes []imagedesc.ImageOrIndex, errCh chan er
 }
 
 func (i ImageSet) getImageOrImageIndexForMultiWrite(item imagedesc.ImageOrIndex, importRepo regname.Repository, registry registry.ImagesReaderWriter) (regname.Tag, regremote.Taggable, error) {
-	uploadTagRef, err := util.BuildDefaultUploadTagRef(item, importRepo)
+	digestWrap := imagedigest.DigestWrap{}
+	err := digestWrap.DigestWrap(item.Ref(), item.OrigRef)
+	if err != nil {
+		return regname.Tag{}, nil, err
+	}
+	uploadTagRef, err := i.tagGen.GenerateTag(digestWrap, importRepo)
 	if err != nil {
 		return regname.Tag{}, nil, err
 	}
 
 	var artifactToWrite regremote.Taggable
+
 	switch {
 	case item.Image != nil:
 		artifactToWrite, err = i.mountableImage(*item.Image, uploadTagRef, registry)
 		if err != nil {
 			return regname.Tag{}, nil, err
 		}
-
 	case item.Index != nil:
 		artifactToWrite = *item.Index
 	default:
@@ -211,7 +216,7 @@ func (i *ImageSet) verifyImageOrIndex(item imagedesc.ImageOrIndex, importRepo re
 		regImageIndex = *item.Index
 	}
 	return ProcessedImage{
-		UnprocessedImageRef: UnprocessedImageRef{existingRef.Name(), item.Tag(), item.Labels},
+		UnprocessedImageRef: UnprocessedImageRef{existingRef.Name(), item.Tag(), item.Labels, item.OrigRef},
 		DigestRef:           importDigestRef.Name(),
 		Image:               regImage,
 		ImageIndex:          regImageIndex,
@@ -230,7 +235,12 @@ func (i *ImageSet) verifyItemCopied(item imagedesc.ImageOrIndex, importRepo regn
 	}
 
 	// AWS ECR doesnt like using digests for manifest uploads
-	uploadTagRef, err := util.BuildDefaultUploadTagRef(item, importRepo)
+	digestWrap := imagedigest.DigestWrap{}
+	err = digestWrap.DigestWrap(item.Ref(), item.OrigRef)
+	if err != nil {
+		return regname.Digest{}, nil
+	}
+	uploadTagRef, err := i.tagGen.GenerateTag(digestWrap, importRepo)
 	if err != nil {
 		return regname.Digest{}, err
 	}
@@ -248,7 +258,6 @@ func (i *ImageSet) verifyItemCopied(item imagedesc.ImageOrIndex, importRepo regn
 
 func (i *ImageSet) verifyTagDigest(
 	uploadTagRef regname.Reference, importDigestRef regname.Digest, registry registry.ImagesReaderWriter) error {
-
 	resultURL, err := getResolvedImageURL(uploadTagRef.Name(), registry)
 	if err != nil {
 		return fmt.Errorf("Verifying imported image %s: %s", uploadTagRef.Name(), err)

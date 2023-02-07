@@ -7,7 +7,6 @@ import (
 	"archive/tar"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -22,7 +21,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	regname "github.com/google/go-containerregistry/pkg/name"
-	regregistry "github.com/google/go-containerregistry/pkg/registry"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/random"
@@ -34,6 +32,7 @@ import (
 	"github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/image"
 	"github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/lockconfig"
 	"github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/registry"
+	regregistry "github.com/vmware-tanzu/carvel-imgpkg/test/helpers/registry"
 )
 
 type FakeTestRegistryBuilder struct {
@@ -45,10 +44,31 @@ type FakeTestRegistryBuilder struct {
 	originalHandler http.Handler
 }
 
+// NewFakeRegistry Creates a registry that uses the ggcr version
 func NewFakeRegistry(t *testing.T, logger *Logger) *FakeTestRegistryBuilder {
 	r := &FakeTestRegistryBuilder{images: map[string]*ImageOrImageIndexWithTarPath{}, t: t, logger: logger}
-	r.server = httptest.NewServer(regregistry.New(regregistry.Logger(log.New(io.Discard, "", 0))))
+	reg := regregistry.New(regregistry.Logger(log.New(io.Discard, "", 0)))
+	r.server = httptest.NewServer(reg)
 
+	r.auth = authn.Anonymous
+	return r
+}
+
+// NewFakeRegistryWithDiskBackend Creates a registry that saves blobs to disk
+func NewFakeRegistryWithDiskBackend(t *testing.T, logger *Logger) *FakeTestRegistryBuilder {
+	r := &FakeTestRegistryBuilder{images: map[string]*ImageOrImageIndexWithTarPath{}, t: t, logger: logger}
+	r.server = httptest.NewServer(regregistry.New(regregistry.Logger(log.New(io.Discard, "", 0)), regregistry.DiskBlobStorage()))
+
+	r.auth = authn.Anonymous
+	return r
+}
+
+// NewFakeRegistryWithRepoSeparation Creates a registry that saves the blobs based on the repository
+func NewFakeRegistryWithRepoSeparation(t *testing.T, logger *Logger) *FakeTestRegistryBuilder {
+	r := &FakeTestRegistryBuilder{images: map[string]*ImageOrImageIndexWithTarPath{}, t: t, logger: logger}
+	r.server = httptest.NewServer(regregistry.New(regregistry.Logger(log.New(io.Discard, "", 0)), regregistry.MemStorageWithRepoSeparation()))
+
+	r.auth = authn.Anonymous
 	return r
 }
 
@@ -70,16 +90,18 @@ func (r *FakeTestRegistryBuilder) BuildWithRegistryOpts(opts registry.Opts) regi
 		auth := regremote.WithAuth(r.auth)
 
 		if val.Image != nil {
-			r.logger.Tracef("build: creating image on registry: %s\n", fmt.Sprintf("%s/%s", u.Host, imageRef))
+			r.logger.Tracef("build: creating image on registry: %s", fmt.Sprintf("%s/%s", u.Host, imageRef))
 			err = regremote.Write(imageRefWithTestRegistry, val.Image, regremote.WithNondistributable, auth)
 			assert.NoError(r.t, err)
 			if val.Tag != "" {
+				r.logger.Tracef(" with tag: %s", val.Tag)
 				err = regremote.Tag(imageRefWithTestRegistry.Context().Tag(val.Tag), val.Image, auth)
 				assert.NoError(r.t, err)
 			} else {
 				err = regremote.Tag(imageRefWithTestRegistry.Context().Tag("latest"), val.Image, auth)
 				assert.NoError(r.t, err)
 			}
+			r.logger.Tracef("\n")
 		}
 
 		if val.ImageIndex != nil {
@@ -99,6 +121,47 @@ func (r *FakeTestRegistryBuilder) BuildWithRegistryOpts(opts registry.Opts) regi
 	reg, err := registry.NewSimpleRegistry(opts)
 	assert.NoError(r.t, err)
 	return reg
+}
+
+// IsConfigBlobLayer checks if digest is from configuration blob
+func (r *FakeTestRegistryBuilder) IsConfigBlobLayer(digest v1.Hash) bool {
+	for _, img := range r.images {
+		if img.Image != nil {
+			m, err := img.Image.Manifest()
+			if err != nil {
+				panic(fmt.Sprintf("Something went wrong..... %s", err))
+			}
+			if m.Config.Digest == digest {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// Layer retrieves a layer from images
+// At this point the function does *NOT* search on Indexes
+func (r *FakeTestRegistryBuilder) Layer(digest v1.Hash) (v1.Layer, error) {
+	for _, img := range r.images {
+		if img.Image != nil {
+			layers, err := img.Image.Layers()
+			if err != nil {
+				return nil, err
+			}
+			for _, layer := range layers {
+				h, err := layer.Digest()
+				if err != nil {
+					return nil, err
+				}
+				if h.Hex == digest.Hex {
+					return layer, nil
+				}
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("Unable to find layer with digest '%s'", digest.String())
 }
 
 func (r *FakeTestRegistryBuilder) WithBasicAuth(username string, password string) {
@@ -272,7 +335,7 @@ func (r *FakeTestRegistryBuilder) WithIdentityToken(idToken string) {
 		}
 
 		if strings.HasSuffix(request.URL.String(), "/id_token_auth") {
-			requestBody, err := ioutil.ReadAll(request.Body)
+			requestBody, err := io.ReadAll(request.Body)
 			assert.NoError(r.t, err)
 			if !strings.Contains(string(requestBody), "&refresh_token="+idToken) {
 				writer.WriteHeader(401)
@@ -324,22 +387,37 @@ func (r *FakeTestRegistryBuilder) WithRegistryToken(regToken string) {
 	r.server.Config.Handler = authHandlerFunc
 }
 
+// Tag the referenced image
+func (r *FakeTestRegistryBuilder) Tag(imageRef, tag string) {
+	for _, img := range r.images {
+		if img.RefDigest == imageRef {
+			img.Tag = tag
+			return
+		}
+	}
+}
+
+// WithBundleFromPath Creates bundle from the provided path
 func (r *FakeTestRegistryBuilder) WithBundleFromPath(bundleName string, path string) BundleInfo {
+	tag := ""
 	tarballLayer, err := compress(path)
 	require.NoError(r.t, err)
 	label := map[string]string{"dev.carvel.imgpkg.bundle": ""}
 
-	bundle, err := image.NewFileImage(tarballLayer.Name(), label)
+	bundleImg, err := image.NewFileImage(tarballLayer.Name(), label)
 	require.NoError(r.t, err)
 
-	r.updateState(bundleName, bundle, nil, path, "")
-	digest, err := bundle.Digest()
+	r.updateState(bundleName, bundleImg, nil, path, tag)
+	digest, err := bundleImg.Digest()
 	assert.NoError(r.t, err)
 
-	return BundleInfo{r, bundle, bundleName, path,
-		digest.String(), r.ReferenceOnTestServer(bundleName + "@" + digest.String())}
+	return BundleInfo{r, bundleImg, bundleName, path,
+		digest.String(), r.ReferenceOnTestServer(bundleName + "@" + digest.String()), tag}
 }
 
+// WithRandomBundle sample function
+// This function creates a bundle image, but WithImageRefs or WithEveryImageFromPath needs to be called
+// on the return value of this function to ensure that a bundle is correctly created on the registry
 func (r *FakeTestRegistryBuilder) WithRandomBundle(bundleName string) BundleInfo {
 	b, err := random.Image(500, 5)
 	require.NoError(r.t, err)
@@ -359,12 +437,12 @@ func (r *FakeTestRegistryBuilder) WithRandomBundle(bundleName string) BundleInfo
 	require.NoError(r.t, err)
 	bundleRef := r.ReferenceOnTestServer(imgName.Context().RepositoryStr() + "@" + digest.String())
 	r.logger.Tracef("created bundle %s\n", bundleRef)
-	tmpDir, err := ioutil.TempDir("", digest.Hex)
+	tmpDir, err := os.MkdirTemp("", digest.Hex)
 	require.NoError(r.t, err)
 	bDir := filepath.Join(tmpDir, bundle.ImgpkgDir)
 	require.NoError(r.t, os.MkdirAll(bDir, 0777))
 	return BundleInfo{r, b, bundleName, tmpDir,
-		digest.String(), bundleRef}
+		digest.String(), bundleRef, ""}
 }
 
 func (r *FakeTestRegistryBuilder) WithImageFromPath(imageNameFromTest string, path string, labels map[string]string) *ImageOrImageIndexWithTarPath {
@@ -390,8 +468,14 @@ func (r *FakeTestRegistryBuilder) WithLocationsImage(bundleRef string, tmpFolder
 	return r.WithImageFromPath(bundleRefDigest.Context().Tag(locationsImageTag).Name(), folder, nil)
 }
 
+// WithRandomImage adds a new random image with 3 layers
 func (r *FakeTestRegistryBuilder) WithRandomImage(imageNameFromTest string) *ImageOrImageIndexWithTarPath {
-	img, err := random.Image(500, 3)
+	return r.WithRandomImageWithLayers(imageNameFromTest, 3)
+}
+
+// WithRandomImageWithLayers adds a new random image with n number of layers provided
+func (r *FakeTestRegistryBuilder) WithRandomImageWithLayers(imageNameFromTest string, n int64) *ImageOrImageIndexWithTarPath {
+	img, err := random.Image(500, n)
 	require.NoError(r.t, err, "create image from tar")
 
 	newImg := r.updateState(imageNameFromTest, img, nil, "", "")
@@ -427,6 +511,7 @@ func (r *FakeTestRegistryBuilder) CopyFromImageRef(imageRef, to string) *ImageOr
 	return r.updateState(to, img.Image, nil, "", "")
 }
 
+// CopyAllImagesFromRepo Copies all images in a particular repository to a destination
 func (r *FakeTestRegistryBuilder) CopyAllImagesFromRepo(imageRef, to string) {
 	digest, err := name.NewDigest(imageRef)
 	require.NoError(r.t, err)
@@ -446,13 +531,15 @@ func (r *FakeTestRegistryBuilder) CopyAllImagesFromRepo(imageRef, to string) {
 	}
 }
 
+// CopyBundleImage Copies a bundle metadata that will create a bundle in to location
 func (r *FakeTestRegistryBuilder) CopyBundleImage(bundleInfo BundleInfo, to string) BundleInfo {
 	newBundle := *r.images[bundleInfo.BundleName]
 	r.updateState(to, bundleInfo.Image, nil, "", "")
 	return BundleInfo{r, newBundle.Image, to, "",
-		newBundle.Digest, newBundle.RefDigest}
+		newBundle.Digest, to + "@" + newBundle.Digest, ""}
 }
 
+// WithARandomImageIndex Creates random index with reference imageName and with numImages images
 func (r *FakeTestRegistryBuilder) WithARandomImageIndex(imageName string, numImages int64) *ImageOrImageIndexWithTarPath {
 	index, err := random.Index(1024, 1, numImages)
 	require.NoError(r.t, err)
@@ -460,6 +547,8 @@ func (r *FakeTestRegistryBuilder) WithARandomImageIndex(imageName string, numIma
 	return r.updateState(imageName, nil, index, "", "")
 }
 
+// WithNonDistributableLayerInImage Adds non-distributable layer of the type
+// types.OCIUncompressedRestrictedLayer to all the provided images
 func (r *FakeTestRegistryBuilder) WithNonDistributableLayerInImage(imageNames ...string) {
 	for _, imageName := range imageNames {
 		layer, err := random.Layer(1024, types.OCIUncompressedRestrictedLayer)
@@ -472,13 +561,15 @@ func (r *FakeTestRegistryBuilder) WithNonDistributableLayerInImage(imageNames ..
 	}
 }
 
-func (r *ImageOrImageIndexWithTarPath) WithNonDistributableLayer() *ImageOrImageIndexWithTarPath {
+// WithNonDistributableLayer Adds non-distributable layer of the type
+// types.OCIUncompressedRestrictedLayer to the current image
+func (r *ImageOrImageIndexWithTarPath) WithNonDistributableLayer() (*ImageOrImageIndexWithTarPath, v1.Layer) {
 	layer, err := random.Layer(1024, types.OCIUncompressedRestrictedLayer)
 	require.NoError(r.t, err)
 
 	r.Image, err = mutate.AppendLayers(r.Image, layer)
 	require.NoError(r.t, err)
-	return r.fakeRegistry.updateState(r.RefDigest, r.Image, r.ImageIndex, r.path, "")
+	return r.fakeRegistry.updateState(r.RefDigest, r.Image, r.ImageIndex, r.path, ""), layer
 }
 
 func (r *FakeTestRegistryBuilder) CleanUp() {
@@ -617,12 +708,16 @@ func (r *FakeTestRegistryBuilder) ResetHandler() *FakeTestRegistryBuilder {
 	return r
 }
 
-func (r *FakeTestRegistryBuilder) WithCustomHandler(handler http.HandlerFunc) {
+// WithCustomHandler Adds the provided http handler that will be called before the default one
+// If the provided handler returns true it means that no further processing is needed.
+// this will skip any further handlers
+func (r *FakeTestRegistryBuilder) WithCustomHandler(handler func(http.ResponseWriter, *http.Request) bool) {
 	parentHandler := r.server.Config.Handler
 
 	r.server.Config.Handler = http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		handler(writer, request)
-		parentHandler.ServeHTTP(writer, request)
+		if !handler(writer, request) {
+			parentHandler.ServeHTTP(writer, request)
+		}
 	})
 }
 
@@ -633,6 +728,7 @@ type BundleInfo struct {
 	BundlePath string
 	Digest     string
 	RefDigest  string
+	Tag        string
 }
 
 func (b BundleInfo) WithEveryImageFromPath(path string, labels map[string]string) BundleInfo {
@@ -704,7 +800,7 @@ func compress(src string) (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("Unable to compress because file not found: %s", err)
 	}
-	tempTarFile, err := ioutil.TempFile(os.TempDir(), "compressed-layer")
+	tempTarFile, err := os.CreateTemp(os.TempDir(), "compressed-layer")
 	if err != nil {
 		return nil, err
 	}

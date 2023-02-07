@@ -8,7 +8,13 @@ import (
 
 	regname "github.com/google/go-containerregistry/pkg/name"
 	"github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/lockconfig"
+	"github.com/vmware-tanzu/carvel-imgpkg/pkg/imgpkg/signature"
 )
+
+// SignatureFetcher Interface to retrieve signatures associated with Images
+type SignatureFetcher interface {
+	FetchForImageRefs(images []lockconfig.ImageRef) ([]lockconfig.ImageRef, error)
+}
 
 // FetchAllImagesRefs returns a flat list of nested bundles and every image reference for a specific bundle
 func (o *Bundle) FetchAllImagesRefs(concurrency int, ui Logger, sigFetcher SignatureFetcher) ([]*Bundle, error) {
@@ -26,7 +32,15 @@ func (o *Bundle) FetchAllImagesRefs(concurrency int, ui Logger, sigFetcher Signa
 		}
 		refs, err := sigFetcher.FetchForImageRefs(imgs)
 		if err != nil {
-			return nil, err
+			fetchErr, ok := err.(*signature.FetchError)
+			if !ok {
+				return nil, err
+			}
+			for _, err := range fetchErr.AllErrors {
+				bundle.cachedImageRefs.StoreImageRef(
+					NewImageRefWithTypeAndError(
+						lockconfig.ImageRef{Image: err.ImageRef()}, SignatureImage, err.Error()))
+			}
 		}
 
 		for _, ref := range refs {
